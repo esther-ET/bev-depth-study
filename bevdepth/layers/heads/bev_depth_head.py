@@ -148,8 +148,9 @@ class BEVDepthHead(CenterHead):
         Returns:
             tuple(list[dict]): Output results for tasks.
         """
-        x = x.float()
+        x = x.float() # 前面voxel pooling后的[1, 80, 128, 128]
         # FPN
+        # backbone开头，初步编码
         trunk_outs = [x]
         if self.trunk.deep_stem:
             x = self.trunk.stem(x)
@@ -157,12 +158,22 @@ class BEVDepthHead(CenterHead):
             x = self.trunk.conv1(x)
             x = self.trunk.norm1(x)
             x = self.trunk.relu(x)
+        # 这一步是逐层过 ResNet，每到指定层就把特征保存下来。比如可能得到：
+        """
+        trunk_outs[0]: [B, 80, 128, 128]    原始 BEV feature
+        trunk_outs[1]: [B, 160, 64, 64]
+        trunk_outs[2]: [B, 320, 32, 32]
+        trunk_outs[3]: [B, 640, 16, 16]
+        """
         for i, layer_name in enumerate(self.trunk.res_layers):
             res_layer = getattr(self.trunk, layer_name)
             x = res_layer(x)
             if i in self.trunk.out_indices:
                 trunk_outs.append(x)
+        # neck融合不同层，低分辨率高语义特征上采样，和高分辨率特征融合
         fpn_output = self.neck(trunk_outs)
+        # 这里调用父类 CenterPoint head，根据融合后的 BEV 特征输出：
+        # heatmap / reg / height / dim / rot / vel
         ret_values = super().forward(fpn_output)
         return ret_values
 

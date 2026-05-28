@@ -233,6 +233,27 @@ r50             ResNet-50 backbone
 它最后会调用：
 `run_cli(BEVDepthLightningModel, 'exp_name')`
 
+`IDA`
+ida = Image Data Augmentation
+它描述图像增强对像素坐标的影响，比如：
+resize
+crop
+flip
+rotate
+原始图像像素点经过这些增强后，坐标会变，所以需要一个 ida_mat 记录：
+
+原始图像像素坐标 -> 增强后图像像素坐标
+例如一张图从原始尺寸 resize/crop 到 256x704，那么像素点 (u, v) 的位置变了。模型后面要把图像特征点反投影到 3D，就必须知道这个图像增强矩阵，否则像素坐标会对不上。
+`BDA`
+bda = BEV Data Augmentation
+它描述 BEV / 3D 空间的数据增强，比如：
+BEV 平面旋转
+BEV 平面缩放
+x/y 翻转
+也就是对 3D box、点云、BEV 坐标做的增强。比如训练时随机把整个鸟瞰坐标系旋转几度，GT box 也跟着旋转，BEV 几何坐标也要一起变。
+
+
+
 ## 6. 实际观察
 
 从bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py
@@ -293,12 +314,70 @@ vx, vy       物体速度在 x/y 方向的分量，单位是 m/s
 由于use_fusion=False depth_labels只给当前 key frame 生成 1 份深度监督
 ```
 ### 2. 模型大模块
+>看forward。
+>这个模块输入 shape 是什么？
+>输出 shape 是什么？
+>坐标系有没有变？
+>语义有没有变（比如 image feature -> BEV feature）
+
+bevdepth/layers/models/base_bev_depth.py (模型)
+forward:
+- backbone输出x（多相机融合后的bev_feature）: torch.Size([1, 160, 128, 128]) [B, C, H_bev, W_bev]
+- backbone输出depthpred（每个相机图像特征点的深度分布）: torch.Size([6, 112, 16, 44]) [B * num_cams, D, H_img_feat, W_img_feat] D 是 depth bins（depth_channels = (d_bound[1] - d_bound[0]) / d_bound[2]获得的）16 和 44 是从 256 704 下采样16倍得到的。
+- 经过head的preds 是tuple(list[dict]) : ([{...}], [{...}], [{...}], [{...}], [{...}], [{...}]) 6个list，对应6个task，类似：
+```
+task 0: car, truck
+task 1: construction_vehicle, bus
+task 2: trailer, barrier
+task 3: motorcycle, bicycle
+task 4: pedestrian, traffic_cone
+...
+```
+每个list有1个dict 每个dict有 6个量
+[batch, channels, bev_h, bev_w]
+0. reg torch.Size([1, 2, 128, 128])-->BEV grid中心点 xy 偏移
+1. height [1 1 128 128]-->目标中心点高 z
+2. dim [1 3 128 128]-->box 长宽高
+3. rot [1 2 128 128]-->yaw 编码 用2个通道表示朝向避免角度直接回归不连续
+4. vel [1 2 128 128]-->平面速度 vx vy
+5. heatmap [1 2 128 128]-->每类目标中心概率图c=2的原因是我看的这个task只有2个类别。
 
 
-#### 深入某个模块
+#### 深入模块
+bevdepth/layers/backbones/base_lss_fpn.py （网络）
+- BaseLSSFPN 类（整个backbone） 从 forward 到 _forward_single_sweep（`get_cam_feats` -> `_forward_depth_net` -> `get_geometry` -> `相乘lift` -> `_forward_voxel_net`->`voxel_pooling_train`）获得feature map。get_cam_feats从sweep_imgs获得图像特征，_forward_depth_net具体看depthnet处理，get_geometry是分配坐标，_forward_voxel_net是选做要不要平滑, voxel_pooling_train是bev特征映射就是splat。
+
+- get_cam_feats函数: 图像特征被flatten得到torch.Size([6, 3, 256, 704])，这个6是batch_size * num_sweeps * num_cams,这个后经过 img_backbone（resnet50）和 img_neck（SECONDFPN）得到图像特征 torch.Size([6, 512, 16, 44])(cam_num,c,h,w) 返回还原成[1, 1, 6, 512, 16, 44]（图像特征）。
+
+- 特色模块DepthNet类：ASPP，MLP，SElayers。此时输入是图像特征，return torch.cat([depth, context], dim=1)。 相机的内参、增强策略、外参一起被mlp后和图像特征分别得到context和depth特征，具体处理时候depth分支会有膨胀卷机扩大感受野。这里输出shape = torch.Size([batch_size * num_cams, 192, 16, 44]) 其中depth:[6, 112, 16, 44] context:[6, 80, 16, 44]
+
+然后把depth部分（截取前112维度）变成深度分布概率，112 个 depth bin 的概率和 = 1（它不是直接预测一个深度值，而是预测这个图像点落在 2m、2.5m、3m、...、57.5m 的概率）。
+- get_geometry部分: 给每个[1, 6, 112, 16, 44]的点算一个概率坐标。第 n 个相机图像上，第 h,w 个特征点，如果深度是第 d 个 bin，它在 ego/BEV 空间里对应哪个 3D 点。这里输出torch.Size([1, 6, 112, 16, 44, 3])。接着将真实米映射到bev grid坐标系大小下，这个 frustum 点应该落到 BEV 网格的哪个格子里。
+
+- lift,depth和context相乘：之前的的depth经过和context（depth:[6, 112, 16, 44] context:[6, 80, 16, 44]）得到img_feat_with_depth，其shape = torch.Size([6, 80, 112, 16, 44])，以上是2D image feature -> 3D frustum feature lift。
+
+- _forward_voxel_net部分:如果当前 use_da=False，所以它基本啥也没做，直接返回。如果 use_da=True，它会用 DepthAggregation 在这个特征上再做一层特征聚合，详见DepthAggregation类别，让深度维和图像空间附近的特征更平滑、更有上下文。这里输出是shape = torch.Size([6, 80, 112, 16, 44])。然后再reshape成torch.Size([1, 6, 80, 112, 16, 44])，重排成torch.Size([1, 6, 112, 16, 44, 80])，使得每个空间点携带 80 维特征。
+
+- 变成bev的关键:voxel_pooling_train 函数，这部分输入geom_xyz: [1, 6, 112, 16, 44, 3]，img_feat_with_depth:[1, 6, 112, 16, 44, 80]，voxel_num: [Xnum, Ynum, Znum]。遍历所有 camera/depth/h/w 的 frustum points，根据 geom_xyz 找到 BEV 网格位置，把对应的80维 feature 累加/池化到 BEV cell输出shape = 这部分 torch.Size([1, 80, 128, 128])。就是splat。
+```text
+整个过程总结：
+图像特征 [6,512,16,44]
+  -> DepthNet 分成 depth概率 [6,112,16,44] 和 context特征 [6,80,16,44]
+  -> depth概率 * context特征，得到 frustum feature [6,80,112,16,44]
+  -> get_geometry 计算每个 frustum feature 对应的 BEV 网格坐标
+  -> voxel_pooling 把所有相机/深度/像素点的特征累加到 BEV
+  -> 得到 BEV feature [1,80,128,128]
+```
+
 
 ### 3. loss查看
+bev_depth_head.loss
+1. heatmap focal loss: loss_heatmap -> self.loss_class GaussianFocalLoss(centerpoint head)
+2. Regression loss for dimension, offset, height, rotation (reg dim vel) ->self.loss_bbox L1Loss(centerpoint head)
 
+### 4. 检测头结构查看
+1. 整体结构 bev_backbone -> bev_neck -> out
+2. bev_backbone: resnet18 bev_neck: SECONDFPN 
 
 关键张量表
 stage                 tensor          shape                         meaning
