@@ -47,8 +47,10 @@ def get_rot(h):
 
 
 def img_transform(img, resize, resize_dims, crop, flip, rotate):
-    ida_rot = torch.eye(2)
-    ida_tran = torch.zeros(2)
+    ida_rot = torch.eye(2) # ida_rot = tensor([[1., 0.],[0., 1.]])
+
+    ida_tran = torch.zeros(2) # ida_tran = tensor([0., 0.])
+
     # adjust image
     img = img.resize(resize_dims)
     img = img.crop(crop)
@@ -119,7 +121,7 @@ def depth_transform(cam_depth, resize, resize_dims, crop, flip, rotate):
         np array: [h/down_ratio, w/down_ratio, d]
     """
 
-    H, W = resize_dims
+    H, W = resize_dims # resize 256，704
     cam_depth[:, :2] = cam_depth[:, :2] * resize
     cam_depth[:, 0] -= crop[0]
     cam_depth[:, 1] -= crop[1]
@@ -365,6 +367,10 @@ class NuscDetDataset(Dataset):
         lidar_ego_pose = lidar_info['LIDAR_TOP']['ego_pose']
         cam_calibrated_sensor = cam_info['calibrated_sensor']
         cam_ego_pose = cam_info['ego_pose']
+        # pts_img (3,3379) depth (3379,) lidar_points (34752,4) 
+        # pts_img 第0维度差不多是0-1600 第1维度差不多是100-900 对应了输入图像大小1600乘900 最后一维度都是1.对应平面上是1
+        # depth 大小在 3-66 对应了深度大小
+        # 返回的就是把点云映射到图片上
         pts_img, depth = map_pointcloud_to_image(
             lidar_points.copy(), img, lidar_calibrated_sensor.copy(),
             lidar_ego_pose.copy(), cam_calibrated_sensor, cam_ego_pose)
@@ -484,13 +490,13 @@ class NuscDetDataset(Dataset):
                         lidar_infos[sweep_idx], cam_info[cam])
                     point_depth_augmented = depth_transform(
                         point_depth, resize, self.ida_aug_conf['final_dim'],
-                        crop, flip, rotate_ida)
+                        crop, flip, rotate_ida) # 
                     lidar_depth.append(point_depth_augmented)
                 img, ida_mat = img_transform(
                     img,
                     resize=resize,
                     resize_dims=resize_dims,
-                    crop=crop,
+                    crop=crop, # crop = (49, 214, 753, 470)
                     flip=flip,
                     rotate=rotate_ida,
                 )
@@ -578,7 +584,11 @@ class NuscDetDataset(Dataset):
             gt_labels.append(
                 self.classes.index(map_name_from_general_to_detection[
                     ann_info['category_name']]))
-        return torch.Tensor(gt_boxes), torch.tensor(gt_labels)
+        # 用numpy.asarray 而不是 numpy.ndarrays
+        gt_boxes = np.asarray(gt_boxes, dtype=np.float32)
+        gt_labels = np.asarray(gt_labels, dtype=np.int64)
+        return torch.from_numpy(gt_boxes), torch.from_numpy(gt_labels)
+
 
     def choose_cams(self):
         """Choose cameras randomly.
@@ -696,7 +706,7 @@ class NuscDetDataset(Dataset):
         else:
             return len(self.infos)
 
-
+# 处理成batch，给到后面的train之类的
 def collate_fn(data, is_return_depth=False):
     imgs_batch = list()
     sensor2ego_mats_batch = list()

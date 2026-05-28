@@ -220,3 +220,5 @@ events.out.tfevents*
 
 # data
 data
+# weights
+weights

@@ -32,7 +32,7 @@ class BaseBEVDepth(nn.Module):
         """Forward function for BEVDepth
 
         Args:
-            x (Tensor): Input ferature map.
+            x (Tensor): Input feature map.
             mats_dict(dict):
                 sensor2ego_mats(Tensor): Transformation matrix from
                     camera to ego with shape of (B, num_sweeps,

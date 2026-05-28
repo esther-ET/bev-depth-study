@@ -18,6 +18,8 @@ from bevdepth.evaluators.det_evaluators import DetNuscEvaluator
 from bevdepth.models.base_bev_depth import BaseBEVDepth
 from bevdepth.utils.torch_dist import all_gather_object, get_rank, synchronize
 
+torch.backends.cudnn.benchmark = True
+
 H = 900
 W = 1600
 final_dim = (256, 704)
@@ -234,6 +236,7 @@ class BEVDepthLightningModel(LightningModule):
                                            'nuscenes_infos_val.pkl')
         self.predict_info_paths = os.path.join(self.data_root,
                                                'nuscenes_infos_test.pkl')
+        
 
     def forward(self, sweep_imgs, mats):
         return self.model(sweep_imgs, mats)
@@ -258,8 +261,8 @@ class BEVDepthLightningModel(LightningModule):
             # only key-frame will calculate depth loss
             depth_labels = depth_labels[:, 0, ...]
         depth_loss = self.get_depth_loss(depth_labels.cuda(), depth_preds)
-        self.log('detection_loss', detection_loss)
-        self.log('depth_loss', depth_loss)
+        self.log('detection_loss', detection_loss, prog_bar=True)
+        self.log('depth_loss', depth_loss, prog_bar=True)
         return detection_loss + depth_loss
 
     def get_depth_loss(self, depth_labels, depth_preds):
@@ -371,14 +374,17 @@ class BEVDepthLightningModel(LightningModule):
             self.evaluator.evaluate(all_pred_results, all_img_metas)
 
     def configure_optimizers(self):
+        # 梯度累计
+        accumulate_grad_batches = getattr(self.trainer,'accumulate_grad_batches',1)
         lr = self.basic_lr_per_img * \
-            self.batch_size_per_device * self.gpus
+            self.batch_size_per_device * self.gpus * accumulate_grad_batches
         optimizer = torch.optim.AdamW(self.model.parameters(),
                                       lr=lr,
                                       weight_decay=1e-7)
         scheduler = MultiStepLR(optimizer, [19, 23])
         return [[optimizer], [scheduler]]
 
+# 数据集加载
     def train_dataloader(self):
         train_dataset = NuscDetDataset(ida_aug_conf=self.ida_aug_conf,
                                        bda_aug_conf=self.bda_aug_conf,

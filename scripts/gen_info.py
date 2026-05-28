@@ -20,6 +20,7 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
             info['sample_token'] = cur_sample['token']
             info['timestamp'] = cur_sample['timestamp']
             info['scene_token'] = cur_sample['scene_token']
+            
             cam_names = [
                 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT', 'CAM_BACK',
                 'CAM_BACK_LEFT', 'CAM_FRONT_LEFT'
@@ -59,8 +60,10 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
 
             lidar_sweeps = [dict() for _ in range(max_lidar_sweeps)]
             cam_sweeps = [dict() for _ in range(max_cam_sweeps)]
+            
             info['cam_infos'] = cam_infos
             info['lidar_infos'] = lidar_infos
+            
             # for i in range(max_cam_sweeps):
             #     cam_sweeps.append(dict())
             for k, cam_data in enumerate(cam_datas):
@@ -128,6 +131,7 @@ def generate_info(nusc, scenes, max_cam_sweeps=6, max_lidar_sweeps=10):
                     break
             info['cam_sweeps'] = cam_sweeps
             info['lidar_sweeps'] = lidar_sweeps
+            
             ann_infos = list()
             if 'anns' in cur_sample:
                 for ann in cur_sample['anns']:

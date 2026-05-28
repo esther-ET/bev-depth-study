@@ -33,6 +33,7 @@ def run_cli(model_class=BEVDepthLightningModel,
                                help='seed for initializing training.')
     parent_parser.add_argument('--ckpt_path', type=str)
     parser = BEVDepthLightningModel.add_model_specific_args(parent_parser)
+    # 训练工具
     parser.set_defaults(profiler='simple',
                         deterministic=False,
                         max_epochs=extra_trainer_config_args.get('epochs', 24),
