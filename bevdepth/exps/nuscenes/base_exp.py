@@ -31,7 +31,7 @@ backbone_conf = {
     'x_bound': [-51.2, 51.2, 0.8],
     'y_bound': [-51.2, 51.2, 0.8],
     'z_bound': [-5, 3, 8],
-    'd_bound': [2.0, 58.0, 0.5],
+    'd_bound': [2.0, 58.0, 0.5], # d_min d_max d_step
     'final_dim':
     final_dim,
     'output_channels':
@@ -197,6 +197,7 @@ class BEVDepthLightningModel(LightningModule):
                  head_conf=head_conf,
                  ida_aug_conf=ida_aug_conf,
                  bda_aug_conf=bda_aug_conf,
+                 lr_scale=1.0,
                  default_root_dir='./outputs/',
                  **kwargs):
         super().__init__()
@@ -206,6 +207,7 @@ class BEVDepthLightningModel(LightningModule):
         self.batch_size_per_device = batch_size_per_device
         self.data_root = data_root
         self.basic_lr_per_img = 2e-4 / 64
+        self.lr_scale = lr_scale
         self.class_names = class_names
         self.backbone_conf = backbone_conf
         self.head_conf = head_conf
@@ -377,7 +379,7 @@ class BEVDepthLightningModel(LightningModule):
         # 梯度累计
         accumulate_grad_batches = getattr(self.trainer,'accumulate_grad_batches',1)
         lr = self.basic_lr_per_img * \
-            self.batch_size_per_device * self.gpus * accumulate_grad_batches
+            self.batch_size_per_device * self.gpus * accumulate_grad_batches * self.lr_scale
         optimizer = torch.optim.AdamW(self.model.parameters(),
                                       lr=lr,
                                       weight_decay=1e-7)
@@ -470,4 +472,8 @@ class BEVDepthLightningModel(LightningModule):
 
     @staticmethod
     def add_model_specific_args(parent_parser):  # pragma: no-cover
+        parent_parser.add_argument('--lr_scale',
+                                   type=float,
+                                   default=1.0,
+                                   help='Scale the linearly scaled base learning rate.')
         return parent_parser

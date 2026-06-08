@@ -356,7 +356,7 @@ bevdepth/layers/backbones/base_lss_fpn.py （网络）
 
 - lift,depth和context相乘：之前的的depth经过和context（depth:[6, 112, 16, 44] context:[6, 80, 16, 44]）得到img_feat_with_depth，其shape = torch.Size([6, 80, 112, 16, 44])，以上是2D image feature -> 3D frustum feature lift。
 
-- _forward_voxel_net部分:如果当前 use_da=False，所以它基本啥也没做，直接返回。如果 use_da=True，它会用 DepthAggregation 在这个特征上再做一层特征聚合，详见DepthAggregation类别，让深度维和图像空间附近的特征更平滑、更有上下文。这里输出是shape = torch.Size([6, 80, 112, 16, 44])。然后再reshape成torch.Size([1, 6, 80, 112, 16, 44])，重排成torch.Size([1, 6, 112, 16, 44, 80])，使得每个空间点携带 80 维特征。
+- _forward_voxel_net部分:如果当前 use_da=False，所以它基本啥也没做，直接返回。如果 use_da=True，它会用 DepthAggregation 在这个特征上再做一层特征聚合，详见DepthAggregation类别，让深度维和图像空间附近的特征更平滑、更有上下文。这里输出是shape = torch.Size([6, 80, 112, 16, 44])。然后再reshape成torch.Size([1, 6, 80, 112, 16, 44])，重排成torch.Size([1, 6, 112, 16, 44, 80])，使得每个空间点携带 80 维特征。-->也就是论文中的DR模块。
 
 - 变成bev的关键:voxel_pooling_train 函数，这部分输入geom_xyz: [1, 6, 112, 16, 44, 3]，img_feat_with_depth:[1, 6, 112, 16, 44, 80]，voxel_num: [Xnum, Ynum, Znum]。遍历所有 camera/depth/h/w 的 frustum points，根据 geom_xyz 找到 BEV 网格位置，把对应的80维 feature 累加/池化到 BEV cell输出shape = 这部分 torch.Size([1, 80, 128, 128])。就是splat。
 ```text
@@ -428,6 +428,48 @@ tensorboard \
   --port 6006
 
 
+# 命令大全
+训练
+```
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py   -b 4 --gpus 1 --precision 32   --max_epochs 1 --limit_train_batches 20 --limit_val_batches 0
+```
+
+测试
+```
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -e \
+  -b 4 \
+  --gpus 1 \
+  --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_6/checkpoints/epoch=23-step=10560.ckpt
+```
+
+训练查看
+```
+tensorboard \
+  --logdir /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_6 \
+  --host 0.0.0.0 \
+  --port 6006
+```
+
+resolution的批量测试
+```
+CKPT=/home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_6/checkpoints/epoch=23-step=10560.ckpt
+# 测试 192x640：
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_192x640_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path $CKPT
+# 测试原始 256x704：
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path $CKPT
+# 测试 320x864：
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_320x864_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path $CKPT
+
+```
+
 
 # 一些gpu监看
 ## 训练开始
@@ -479,6 +521,49 @@ backward 0.406s / batch
 batch_to_device 0.054s / batch
 数据搬到 GPU 很少，不是瓶颈。
 
+# 一些结论
+- 从论文看结果，这几个重要模块的提点排序如下（我们使用的方法是不带dr的）：
+Depth Loss：有
+Camera-awareness：有
+multi-frame：有
+Depth Refinement Module：无
+- 论文中由于深度预测不准，关于图像大小可能带来的过拟合问题：只验证了小图像测大图像，我的想法是在这里我再训练一个大图像的，测小中图像，看看哪个鲁棒性更好。
+- 这个项目有并行训练，batch给很大，我没这个条件，我用了累计法，那就可以调节累积步数改变学习率。时间上我的4090也是和论文8卡一样用了1.5天。
+- 深度分桶论文没测，我可以跑一跑看看。
 
+# spec
+相机顺序：
+0 CAM_FRONT_LEFT
+1 CAM_FRONT
+2 CAM_FRONT_RIGHT
+3 CAM_BACK_LEFT
+4 CAM_BACK
+5 CAM_BACK_RIGHT
 
-
+结果生成：
+在/home/ubuntu/SWW/code/BEVDepth/bevdepth/evaluators/det_evaluators.py
+```json
+{
+  "meta": {
+    "use_lidar": false,
+    "use_camera": true,
+    "use_radar": false,
+    "use_map": false,
+    "use_external": false
+  },
+  "results": {
+    "sample_token": [
+      {
+        "sample_token": "...",
+        "translation": [x, y, z],
+        "size": [w, l, h],
+        "rotation": [qw, qx, qy, qz],
+        "velocity": [vx, vy],
+        "detection_name": "car",
+        "detection_score": 0.83,
+        "attribute_name": "vehicle.parked"
+      }
+    ]
+  }
+}
+```

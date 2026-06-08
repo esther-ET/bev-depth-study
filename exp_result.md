@@ -1,0 +1,441 @@
+# 1 基准实验
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py -b 4 --gpus 1 --accumulate_grad_batches 16
+1. 原图大小的eval
+```
+Evaluating bboxes of img_bbox
+mAP: 0.3141
+mATE: 0.7322
+mASE: 0.2795
+mAOE: 0.6349
+mAVE: 0.5500
+mAAE: 0.2159
+NDS: 0.4158
+Eval time: 38.3s（官方计算metric的耗时）
+
+Per-class results:
+
+Object Class AP ATE ASE AOE AVE AAE
+
+car 0.485 0.553 0.168 0.209 0.577 0.228
+
+truck 0.254 0.730 0.224 0.254 0.516 0.217
+
+bus 0.362 0.690 0.199 0.186 1.049 0.257
+
+trailer 0.143 1.162 0.254 0.783 0.520 0.123
+
+construction_vehicle 0.069 1.125 0.505 1.291 0.127 0.406
+
+pedestrian 0.276 0.762 0.295 0.977 0.581 0.295
+
+motorcycle 0.315 0.648 0.264 0.859 0.783 0.189
+
+bicycle 0.311 0.579 0.260 0.922 0.247 0.011
+
+traffic_cone 0.440 0.533 0.350 nan nan nan
+
+barrier 0.486 0.538 0.276 0.233 nan nan
+
+  
+
+### 测试耗时
+
+- 总测试时间：457.26s，约 7.6min 包含 dataloader + batch_to_device + model test_step + 后处理 + test_epoch_end
+
+- 测试 batch 数：1505
+
+🫪- 单 batch test_step 平均耗时：0.155s 🫪可以作为工程上的端到端 batch 推理耗时，每个 batch 的推理 + 单 batch 后处理耗时，0.15536s / 4 ≈ 0.03884s / sample，即约 25.7 FPS ，不过是 按“一个 sample = 6 相机一帧”算的。
+
+- GPU 数据搬运 batch_to_device 平均耗时：0.063s，占总时间约 20.6%
+
+- test_epoch_end / nuScenes 评估耗时：115.28s，占总时间约 25.2% 包含收集预测结果、格式化 bbox、写 json、调用 nuScenes evaluator、汇总结果等
+
+- 主要耗时来自模型推理后处理和最终 nuScenes evaluation，dataloader 初始化耗时较小。
+```
+
+2. 用这个点测试小图像
+AP: 0.2520 mATE: 0.8423 mASE: 0.2806 mAOE: 0.6508 mAVE: 0.5512 mAAE: 0.2235 NDS: 0.3712   
+Eval time: 40s
+Per-class results:                                                                                                
+Object Class            AP      ATE     ASE     AOE     AVE     AAE                                               
+car                     0.389   0.720   0.175   0.231   0.585   0.229                                             
+truck                   0.191   0.880   0.231   0.262   0.551   0.232                                             
+bus                     0.287   0.828   0.212   0.217   1.115   0.284                                             
+trailer                 0.121   1.138   0.231   0.665   0.401   0.142                                             
+construction_vehicle    0.048   1.079   0.506   1.491   0.130   0.396                                             
+pedestrian              0.221   0.825   0.296   0.974   0.589   0.300                                             
+motorcycle              0.244   0.827   0.263   0.873   0.782   0.191                                             
+bicycle                 0.202   0.861   0.260   0.920   0.255   0.015                                             
+traffic_cone            0.399   0.580   0.352   nan     nan     nan                                               
+barrier                 0.418   0.685   0.281   0.225   nan     nan
+
+b=4 显存很小4000多
+- test_step = 0.1115 s/batch ≈ 27.9 ms/sample
+- total test wall time = 377.0 s
+- test_epoch_end = 116.7 s
+
+3. 用大一点的图像测试
+AP: 0.2754  mATE: 0.8241  mASE: 0.2834 mAOE: 0.6534  mAVE: 0.5479  mAAE: 0.2275 NDS: 0.3841   Eval time: 39.2s 
+Per-class results:                                                                             
+Object Class            AP      ATE     ASE     AOE     AVE     AAE                            
+car                     0.439   0.661   0.169   0.214   0.572   0.232                          
+truck                   0.218   0.817   0.230   0.256   0.508   0.226                          
+bus                     0.275   0.824   0.202   0.202   0.995   0.271                          
+trailer                 0.099   1.204   0.266   0.743   0.514   0.103                          
+construction_vehicle    0.053   1.105   0.512   1.367   0.127   0.487                          
+pedestrian              0.262   0.852   0.300   1.009   0.590   0.300                          
+motorcycle              0.265   0.793   0.264   0.825   0.851   0.192                          
+bicycle                 0.292   0.699   0.264   1.020   0.226   0.008                          
+traffic_cone            0.400   0.646   0.345   nan     nan     nan                            
+barrier                 0.450   0.641   0.282   0.244   nan     nan
+
+test_step mean = 0.22679 s / batch
+batch size = 4
+0.22679 / 4 = 0.0567 s
+
+frustum 点数量按 112 * H_feat * W_feat * 6 cameras 走，所以：
+192x640: 112 * 12 * 40 * 6 = 322,560
+256x704: 112 * 16 * 44 * 6 = 473,088
+320x864: 112 * 20 * 54 * 6 = 725,760
+
+总结下：
+test size | test_step s/batch | ms/sample | total time
+192x640   | 0.1115            | 27.9      | 377.0s.     mAP: 0.2520 NDS:0.3712
+256x704   | 0.1554            | 38.8      | 457.3s      mAP: 0.3141 NDS: 0.4158
+320x864   | 0.2268            | 56.7      | 625.0s      mAP: 0.2754 NDS: 0.3841
+
+# 2 小图 depth
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_192x640_128x128_24e_2key.py -b 4 --gpus 1 --accumulate_grad_batches 16
+
+
+
+
+ckpt:
+`/home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_192x640_128x128_24e_2key/lightning_logs/version_1/checkpoints/epoch=23-step=10560.ckpt`
+
+说明：这组测试是在两个学习率训练进程同时占用 GPU/CPU 的情况下跑的，所以 profiler 里的 total time、test_step time 明显偏慢；mAP/NDS 指标正常可用于实验对比，耗时只作为本次机器负载下的参考。
+
+1. 用小图训练点测试 192x640
+
+```
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_192x640_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_192x640_128x128_24e_2key/lightning_logs/version_1/checkpoints/epoch=23-step=10560.ckpt
+```
+
+AP: 0.2671  mATE: 0.7483  mASE: 0.2908  mAOE: 0.7466  mAVE: 0.6400  mAAE: 0.2325  NDS: 0.3677
+Eval time: 288.5s
+
+Per-class results:
+
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.444   0.565   0.174   0.262   0.622   0.229
+truck                   0.186   0.782   0.249   0.312   0.566   0.245
+bus                     0.280   0.712   0.228   0.237   1.213   0.291
+trailer                 0.090   1.110   0.243   1.033   0.862   0.140
+construction_vehicle    0.033   1.080   0.554   1.445   0.124   0.431
+pedestrian              0.226   0.793   0.298   0.991   0.594   0.311
+motorcycle              0.287   0.672   0.257   1.016   0.876   0.202
+bicycle                 0.280   0.602   0.274   1.195   0.261   0.010
+traffic_cone            0.399   0.591   0.351   nan     nan     nan
+barrier                 0.445   0.575   0.279   0.227   nan     nan
+
+- total time = 2005.0s
+- test_step = 0.25243s/batch ≈ 63.1ms/sample
+- batch_to_device = 0.03002s/batch
+- test_epoch_end = 766.87s
+
+2. 用小图训练点测试 256x704
+
+```
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_192x640_128x128_24e_2key/lightning_logs/version_1/checkpoints/epoch=23-step=10560.ckpt
+```
+
+AP: 0.2194  mATE: 0.8665  mASE: 0.3005  mAOE: 0.7811  mAVE: 0.6153  mAAE: 0.2410  NDS: 0.3293
+Eval time: 314.6s
+
+Per-class results:
+
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.379   0.712   0.178   0.276   0.625   0.234
+truck                   0.138   0.931   0.269   0.352   0.617   0.248
+bus                     0.206   0.779   0.253   0.258   1.197   0.303
+trailer                 0.060   1.138   0.285   1.250   0.547   0.064
+construction_vehicle    0.027   1.056   0.535   1.374   0.136   0.546
+pedestrian              0.200   0.940   0.302   1.038   0.609   0.332
+motorcycle              0.228   0.859   0.261   1.067   0.918   0.187
+bicycle                 0.206   0.819   0.284   1.175   0.274   0.014
+traffic_cone            0.353   0.709   0.357   nan     nan     nan
+barrier                 0.396   0.724   0.280   0.240   nan     nan
+
+- total time = 2136.8s
+- test_step = 0.31234s/batch ≈ 78.1ms/sample
+- batch_to_device = 0.04722s/batch
+- test_epoch_end = 818.39s
+
+3. 用小图训练点测试 320x864
+
+```
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_320x864_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_192x640_128x128_24e_2key/lightning_logs/version_1/checkpoints/epoch=23-step=10560.ckpt
+```
+
+AP: 0.2096  mATE: 0.8516  mASE: 0.3125  mAOE: 0.7913  mAVE: 0.6709  mAAE: 0.2523  NDS: 0.3170
+Eval time: 294.7s
+
+Per-class results:
+
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.384   0.664   0.181   0.288   0.708   0.247
+truck                   0.133   0.882   0.295   0.425   0.663   0.231
+bus                     0.194   0.767   0.265   0.257   1.396   0.330
+trailer                 0.032   1.126   0.341   1.252   0.597   0.058
+construction_vehicle    0.026   1.059   0.534   1.421   0.129   0.580
+pedestrian              0.182   0.941   0.309   1.061   0.617   0.347
+motorcycle              0.204   0.848   0.264   0.999   0.977   0.219
+bicycle                 0.208   0.844   0.288   1.171   0.279   0.006
+traffic_cone            0.353   0.671   0.360   nan     nan     nan
+barrier                 0.382   0.714   0.289   0.248   nan     nan
+
+- total time = 2233.7s
+- test_step = 0.41338s/batch ≈ 103.3ms/sample
+- batch_to_device = 0.07017s/batch
+- test_epoch_end = 787.75s
+
+总结：
+
+test size | test_step s/batch | ms/sample | total time | mAP | NDS
+192x640   | 0.2524            | 63.1      | 2005.0s    | 0.2671 | 0.3677
+256x704   | 0.3123            | 78.1      | 2136.8s    | 0.2194 | 0.3293
+320x864   | 0.4134            | 103.3     | 2233.7s    | 0.2096 | 0.3170
+
+观察：
+- 小图训练点在小图测试上最好，换到 256x704 和 320x864 都掉点。
+- 这说明模型对训练/测试图像尺度一致性比较敏感；小图训练后，并不会因为测试图像更大就自然变好。
+- 和 #1 的 256x704 训练点对比，256 训练点在 256x704 上最好；小图训练点在 192x640 上最好，这个现象比较符合“尺度分布/深度几何网格过拟合当前训练设置”的解释。
+- 本组耗时受并行训练进程影响较大，不建议和 #1 的耗时做严格横向对比；更适合比较同一轮测试内 192/256/320 的相对变化。
+
+
+# 3 小学习率 depth2
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -b 4 --gpus 1 --accumulate_grad_batches 16 --lr_scale 0.5
+
+ckpt:
+`/home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_9/checkpoints/epoch=23-step=10560.ckpt`
+
+测试命令：
+```
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_9/checkpoints/epoch=23-step=10560.ckpt
+```
+
+AP: 0.3078  mATE: 0.7187  mASE: 0.2892  mAOE: 0.7522  mAVE: 0.5999  mAAE: 0.2247  NDS: 0.3955
+Eval time: 63.6s
+
+Per-class results:
+
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.472   0.567   0.174   0.279   0.650   0.241
+truck                   0.247   0.752   0.239   0.311   0.619   0.238
+bus                     0.368   0.689   0.224   0.286   1.135   0.261
+trailer                 0.143   1.064   0.249   1.140   0.538   0.176
+construction_vehicle    0.062   1.048   0.513   1.459   0.128   0.370
+pedestrian              0.265   0.762   0.299   0.999   0.616   0.298
+motorcycle              0.314   0.665   0.268   0.924   0.853   0.202
+bicycle                 0.295   0.551   0.272   1.117   0.261   0.012
+traffic_cone            0.425   0.534   0.364   nan     nan     nan
+barrier                 0.486   0.554   0.290   0.253   nan     nan
+
+- total time = 720.34s
+- test_step = 0.16664s/batch ≈ 41.7ms/sample
+- batch_to_device = 0.01892s/batch
+- test_epoch_end = 183.4s
+
+# 4 大学习率 depth3
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -b 4 --gpus 1 --accumulate_grad_batches 16 --lr_scale 2.0
+
+ckpt:
+`/home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_11/checkpoints/epoch=23-step=10560.ckpt`
+
+测试命令：
+```
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_11/checkpoints/epoch=23-step=10560.ckpt
+```
+
+AP: 0.3215  mATE: 0.7050  mASE: 0.2780  mAOE: 0.6164  mAVE: 0.5071  mAAE: 0.2265  NDS: 0.4275
+Eval time: 62.9s
+
+Per-class results:
+
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.494   0.544   0.166   0.184   0.528   0.227
+truck                   0.263   0.755   0.223   0.218   0.465   0.209
+bus                     0.379   0.656   0.205   0.155   0.926   0.250
+trailer                 0.166   1.035   0.245   0.551   0.553   0.178
+construction_vehicle    0.060   1.047   0.522   1.382   0.129   0.432
+pedestrian              0.278   0.754   0.296   0.933   0.557   0.293
+motorcycle              0.315   0.672   0.259   0.875   0.661   0.217
+bicycle                 0.327   0.539   0.253   1.034   0.238   0.006
+traffic_cone            0.441   0.538   0.339   nan     nan     nan
+barrier                 0.490   0.509   0.271   0.216   nan     nan
+
+- total time = 726.2s
+- test_step = 0.16251s/batch ≈ 40.6ms/sample
+- batch_to_device = 0.01733s/batch
+- test_epoch_end = 225.88s
+
+学习率实验总结：
+
+| exp | lr_scale | mAP | NDS | 主要观察 |
+|---|---:|---:|---:|---|
+| 基准 | 1.0 | 0.3141 | 0.4158 | 原始设置 |
+| 小学习率 depth2 | 0.5 | 0.3078 | 0.3955 | mAP/NDS 都低于基准，尤其 AOE、AVE 变差 |
+| 大学习率 depth3 | 2.0 | 0.3215 | 0.4275 | 三组里最好，mAP/NDS 都高于基准，ATE/AOE/AVE 也更好 |
+
+结论：
+- 当前这组实验里，`lr_scale=2.0` 效果最好，`lr_scale=0.5` 效果最差。
+- 说明这个配置在 24 epoch 内可能还没有被原始学习率充分优化，稍微放大学习率有利于收敛。
+- 但这不是说学习率越大越好；还需要看训练曲线是否抖动、是否出现 loss spike、最终 epoch 前是否已经过拟合。
+
+除了 mAP/NDS，还可以分析：
+- loss 曲线：总 loss、heatmap loss、bbox/reg loss、depth loss 是否下降更快，后期是否震荡。
+- validation 指标随 epoch 的变化：哪个学习率更早达到较好 NDS，哪个后期更稳。
+- 各类指标拆分：mATE 看位置，mASE 看尺寸，mAOE 看朝向，mAVE 看速度；大学习率这轮主要在 AOE/AVE 上更好。
+- per-class AP：看提升是不是只来自 car/barrier 等大类，还是 bus/truck/pedestrian 等类别也一起提升。
+- 梯度和稳定性：是否有 NaN、loss spike、梯度爆炸、学习率 warmup 后突变。
+- checkpoint 选择：只看最后 epoch 可能不够，最好比较 best NDS epoch 和 last epoch。
+- 重复实验：如果时间允许，同一学习率换 seed 再跑一次，排除单次随机性。
+
+学习率分析依据和补充结论：
+
+数据来源：
+- 基准：`lightning_logs/version_6`，`lr_scale=1.0`
+- 小学习率：`lightning_logs/version_9`，`lr_scale=0.5`
+- 大学习率：`lightning_logs/version_11`，`lr_scale=2.0`
+- 训练曲线来自 TensorBoard event 文件，当前代码只记录了 `detection_loss` 和 `depth_loss`。
+- 最终检测指标来自三个 last checkpoint 的 256x704 val 测试结果。
+
+代码依据：
+- `training_step` 里返回的是 `detection_loss + depth_loss`，但日志只写了 `detection_loss` 和 `depth_loss`。
+- `detection_loss` 内部由 head 里的 heatmap focal loss 和 bbox L1 loss 累加而成，但当前代码没有把 heatmap/bbox 子 loss 单独 log 出来。
+- `depth_loss` 是前景深度 bin 的 BCE loss，最后乘了 3.0。
+- 学习率由 `basic_lr_per_img * batch_size_per_device * gpus * accumulate_grad_batches * lr_scale` 得到，并使用 `MultiStepLR([19, 23])`。
+
+1. loss 曲线：
+
+| exp | detection last100 mean | depth last100 mean | detection last | depth last | 观察 |
+|---|---:|---:|---:|---:|---|
+| 基准 lr_scale=1.0 | 9.8154 | 7.9757 | 9.4455 | 7.3795 | 正常收敛 |
+| 小学习率 lr_scale=0.5 | 10.0585 | 8.0352 | 9.6478 | 7.4431 | 后期 loss 略高于基准 |
+| 大学习率 lr_scale=2.0 | 9.6032 | 7.9904 | 8.9256 | 7.3200 | detection loss 后期最低，last loss 也最低 |
+
+结论：
+- 大学习率的 detection loss 后期更低，这和它最终 mAP/NDS 更高是匹配的。
+- depth loss 三组差异很小，说明学习率变化主要影响检测头/BEV 检测收敛，而不是明显改变 depth supervision 的最终数值。
+- 小学习率的早期 detection loss 出现过很大的异常值，但后期恢复正常；从最终指标看，它不是最优。
+- 现有日志没有单独的 heatmap loss、bbox/reg loss，所以不能直接说 heatmap 或 bbox 哪个下降更快，只能说 detection loss 总体。
+
+2. validation 指标随 epoch：
+
+当前没有每个 epoch 的 val NDS/mAP 曲线，因为训练阶段没有按 epoch 跑 validation 并记录 NDS；目前只有 last checkpoint 的最终 eval。
+
+所以现在只能比较：
+
+| exp | mAP | NDS |
+|---|---:|---:|
+| 基准 lr_scale=1.0 | 0.3141 | 0.4158 |
+| 小学习率 lr_scale=0.5 | 0.3078 | 0.3955 |
+| 大学习率 lr_scale=2.0 | 0.3215 | 0.4275 |
+
+结论：
+- 从 last checkpoint 看，`lr_scale=2.0` 最好。
+- 但“哪个学习率更早达到高 NDS”“后期是否回落”现在无法证明，需要训练时每个 epoch 都 eval，或者至少保留多个 epoch checkpoint 再逐个测试。
+
+3. 指标拆分：
+
+| exp | mATE | mASE | mAOE | mAVE | mAAE |
+|---|---:|---:|---:|---:|---:|
+| 基准 lr_scale=1.0 | 0.7322 | 0.2795 | 0.6349 | 0.5500 | 0.2159 |
+| 小学习率 lr_scale=0.5 | 0.7187 | 0.2892 | 0.7522 | 0.5999 | 0.2247 |
+| 大学习率 lr_scale=2.0 | 0.7050 | 0.2780 | 0.6164 | 0.5071 | 0.2265 |
+
+相对基准：
+- 小学习率：mATE 略好，但 mAOE +0.1173、mAVE +0.0499，朝向和速度明显变差，所以 NDS 被拉低。
+- 大学习率：mATE -0.0272、mAOE -0.0185、mAVE -0.0429，位置、朝向、速度都更好，所以 NDS 提升。
+
+结论：
+- 大学习率不是只提高 AP，它还改善了 localization、orientation、velocity 这些质量指标。
+- 小学习率的问题主要不是“完全检不出来”，而是 box 质量，尤其朝向和速度较差。
+
+4. per-class AP：
+
+相对基准，大学习率 AP 变化：
+
+| class | delta AP |
+|---|---:|
+| car | +0.009 |
+| truck | +0.009 |
+| bus | +0.017 |
+| trailer | +0.023 |
+| construction_vehicle | -0.009 |
+| pedestrian | +0.002 |
+| motorcycle | +0.000 |
+| bicycle | +0.016 |
+| traffic_cone | +0.001 |
+| barrier | +0.004 |
+
+相对基准，小学习率 AP 变化：
+
+| class | delta AP |
+|---|---:|
+| car | -0.013 |
+| truck | -0.007 |
+| bus | +0.006 |
+| trailer | +0.000 |
+| construction_vehicle | -0.007 |
+| pedestrian | -0.011 |
+| motorcycle | -0.001 |
+| bicycle | -0.016 |
+| traffic_cone | -0.015 |
+| barrier | +0.000 |
+
+结论：
+- 大学习率提升不是只来自 car/barrier，大部分主要类别都有小幅提升，bus、trailer、bicycle 更明显。
+- construction_vehicle 下降，说明大学习率并不是所有类别都更好；这个类本身样本少、AP 低，波动也更大。
+- 小学习率多数类别低于基准，说明它整体没有训练到更好的检测状态。
+
+5. 梯度和稳定性：
+
+已有证据：
+- TensorBoard 里的 `detection_loss` 和 `depth_loss` 都是有限值，训练能完整到 epoch 23，并成功保存 ckpt。
+- 三个 checkpoint 都能正常 eval，没有 NaN 输出导致 evaluator 崩溃。
+- `lr_scale=2.0` 的最大 detection loss 只有 27.99；基准最大 320.13，小学习率最大 4075.75。这个最大值主要出现在最早期记录点，后期都恢复正常。
+
+不能证明的部分：
+- 当前没有 grad norm、参数 norm、学习率曲线、NaN counter，所以不能严格判断“是否发生梯度爆炸”。
+- 只能说从 loss/event/ckpt/eval 结果看，没有出现训练崩溃或明显不稳定。
+
+6. checkpoint 选择：
+
+当前每组只比较了 `epoch=23-step=10560.ckpt`，也就是 last checkpoint。
+
+结论：
+- `lr_scale=2.0` 是 last checkpoint 上最好，不一定等于全训练过程中的 best checkpoint。
+- 如果要严谨，应该保存 `every_n_epochs=1` 或按 NDS 监控 best checkpoint，然后比较 best NDS。
+- 现在没有每个 epoch 的 ckpt，因此不能排除某个学习率在更早 epoch 曾经更好。
+
+7. 重复实验：
+
+当前每个学习率只有一个 seed，所有结论都是单次实验结论。
+
+结论：
+- 可以写成：“在当前 seed 和训练设置下，`lr_scale=2.0` 表现最好。”
+- 不建议写成：“大学习率必然优于小学习率。”
+- 如果时间允许，至少对基准和 `lr_scale=2.0` 再各跑一个 seed，看 NDS 差距是否仍然稳定。
