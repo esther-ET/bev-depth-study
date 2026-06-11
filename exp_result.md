@@ -439,3 +439,198 @@ barrier                 0.490   0.509   0.271   0.216   nan     nan
 - 可以写成：“在当前 seed 和训练设置下，`lr_scale=2.0` 表现最好。”
 - 不建议写成：“大学习率必然优于小学习率。”
 - 如果时间允许，至少对基准和 `lr_scale=2.0` 再各跑一个 seed，看 NDS 差距是否仍然稳定。
+
+# 5 depth bin 更细粒度
+
+配置：
+- 基准 depth bin：`d_bound=[2.0, 58.0, 0.5]`，depth_channels = 112
+- 本实验 depth bin：`d_bound=[2.0, 58.0, 0.25]`，depth_channels = 224
+- 图像分辨率和 BEV 网格保持不变：256x704，128x128
+- 其他训练设置保持一致：`-b 4 --gpus 1 --accumulate_grad_batches 16`
+
+训练命令：
+```
+python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key_dbins025.py \
+  -b 4 --gpus 1 --accumulate_grad_batches 16
+```
+
+ckpt:
+`/home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key_dbins025/lightning_logs/version_0/checkpoints/epoch=23-step=10560.ckpt`
+
+测试命令：
+```
+CUDA_VISIBLE_DEVICES=1 conda run -n bevdepth1 python /home/ubuntu/SWW/code/BEVDepth/bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key_dbins025.py \
+  -e -b 4 --gpus 1 --precision 32 \
+  --ckpt_path /home/ubuntu/SWW/code/BEVDepth/outputs/bev_depth_lss_r50_256x704_128x128_24e_2key_dbins025/lightning_logs/version_0/checkpoints/epoch=23-step=10560.ckpt
+```
+
+注意：这次 eval 前发现 `bevdepth/evaluators/det_evaluators.py` 中写 `results_nusc.json` 的地方有一处拼写错误，`self.modalvcity` 已修成 `self.modality`，否则会在 test_epoch_end 写 json 时失败。
+
+结果：
+```
+mAP: 0.3180
+mATE: 0.7132
+mASE: 0.2820
+mAOE: 0.6112
+mAVE: 0.5035
+mAAE: 0.2298
+NDS: 0.4250
+Eval time: 38.4s
+```
+
+Per-class results:
+
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.491   0.552   0.166   0.202   0.539   0.231
+truck                   0.259   0.729   0.227   0.241   0.455   0.212
+bus                     0.354   0.766   0.223   0.193   1.017   0.277
+trailer                 0.154   1.044   0.230   0.621   0.431   0.201
+construction_vehicle    0.062   1.035   0.531   1.415   0.127   0.417
+pedestrian              0.281   0.754   0.298   0.974   0.560   0.290
+motorcycle              0.324   0.662   0.254   0.834   0.679   0.204
+bicycle                 0.309   0.547   0.261   0.801   0.220   0.006
+traffic_cone            0.451   0.518   0.342   nan     nan     nan
+barrier                 0.496   0.525   0.287   0.219   nan     nan
+
+测试耗时：
+- total time = 474.73s
+- test_step = 0.16456s/batch ≈ 41.1ms/sample
+- batch_to_device = 0.06251s/batch
+- test_epoch_end = 116.4s
+
+和基准 #1 对比：
+
+| exp | depth step | depth bins | mAP | NDS | mATE | mASE | mAOE | mAVE | mAAE | test_step |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 基准 | 0.5 | 112 | 0.3141 | 0.4158 | 0.7322 | 0.2795 | 0.6349 | 0.5500 | 0.2159 | 0.15536s/batch |
+| 细 depth bin | 0.25 | 224 | 0.3180 | 0.4250 | 0.7132 | 0.2820 | 0.6112 | 0.5035 | 0.2298 | 0.16456s/batch |
+
+变化：
+- mAP +0.0039，NDS +0.0092，整体小幅提升。
+- mATE、mAOE、mAVE 都变好，说明位置、朝向、速度质量有提升。
+- mASE 和 mAAE 略差，尺寸和属性没有同步提升。
+- test_step 从 0.15536s/batch 增加到 0.16456s/batch，大约慢 5.9%；depth bin 数量翻倍，但端到端推理没有翻倍，说明耗时不完全由 depth bins 决定。
+
+Per-class AP 相对基准变化：
+
+| class | baseline AP | dbins025 AP | delta |
+|---|---:|---:|---:|
+| car | 0.485 | 0.491 | +0.006 |
+| truck | 0.254 | 0.259 | +0.005 |
+| bus | 0.362 | 0.354 | -0.008 |
+| trailer | 0.143 | 0.154 | +0.011 |
+| construction_vehicle | 0.069 | 0.062 | -0.007 |
+| pedestrian | 0.276 | 0.281 | +0.005 |
+| motorcycle | 0.315 | 0.324 | +0.009 |
+| bicycle | 0.311 | 0.309 | -0.002 |
+| traffic_cone | 0.440 | 0.451 | +0.011 |
+| barrier | 0.486 | 0.496 | +0.010 |
+
+结论：
+- 更细的 depth bin 在当前实验中是有效的，但收益不大，属于小幅提升。
+- 提升主要体现在 NDS 相关的 box 质量指标，尤其 mATE/mAOE/mAVE，而不是所有类别 AP 都明显增长。
+- 代价是推理略慢、训练也更重；如果后续要继续调，可以再试 `d_bound=[2.0, 58.0, 0.75]` 或只调整近距离深度范围，看看是否存在更划算的精度/速度折中。
+
+# 6 bad case分析
+
+使用工具：
+- `visualize/compare_pred_gt.py`：把预测框和 GT 投影到 6 个相机图像，蓝色 TP、红色 FP、黄色 FN。
+- `visualize/mine_bad_cases.py`：按 FN/FP、远距离、小目标、低可见度等标签筛 bad case。
+- `visualize/dump_bev_depth_outputs.py`：导出输入图、depth argmax/conf、splat 后 BEV、最终 BEV feature、head heatmap，用于辅助判断错误原因。
+
+分析口径：
+- 当前 TP/FP/FN 是可视化用的简化匹配，不是 nuScenes 官方 mAP/NDS 的匹配。
+- 规则是：先用 `score_thr=0.3` 过滤预测框，再做同类别 BEV 中心距离 greedy matching，`match_dist=2.0m` 内算 TP。
+- 未匹配 GT 算 FN，未匹配预测框算 FP。
+- 全量统计时只保留 BEVDepth 检测头实际预测的 10 类：`car/truck/bus/trailer/construction_vehicle/pedestrian/motorcycle/bicycle/traffic_cone/barrier`。
+
+## 6.1 全验证集简化统计
+
+基于基准实验 `results_nusc.json`，在 nuScenes val 6019 个 sample 上统计：
+
+| item | count |
+|---|---:|
+| GT boxes | 187675 |
+| Pred boxes(score>=0.3) | 181988 |
+| TP | 81006 |
+| FN | 106669 |
+| FP | 100982 |
+| bad samples | 5977 / 6019 |
+
+按 bad case 标签统计：
+
+| tag | count | 含义 |
+|---|---:|---|
+| `fn_far` | 59367 | 远距离 GT 漏检，距离 >= 40m |
+| `fn_small` | 36497 | 小目标 GT 漏检，box volume <= 2 |
+| `fn_low_visibility` | 57100 | 低可见度 GT 漏检，visibility token 为 1/2 |
+| `fp_far` | 4500 | 远距离误检 |
+| `fp_small` | 85683 | 小体积预测框误检 |
+
+按类别统计：
+
+| class | TP | FN | FP | 主要现象 |
+|---|---:|---:|---:|---|
+| car | 32830 | 47174 | 11041 | 数量最多，远距离和遮挡场景漏检明显 |
+| pedestrian | 15952 | 18542 | 46351 | FP 很多，小目标/低分候选多，阈值敏感 |
+| traffic_cone | 9415 | 6182 | 22314 | 小目标误检多，容易和路边细长物混淆 |
+| barrier | 14930 | 12062 | 16028 | 静态目标较多，近处可检，远处/遮挡仍容易漏 |
+| truck | 4008 | 11696 | 2543 | 大车漏检较多，和远距离、遮挡、类别混淆有关 |
+| bus | 1133 | 2025 | 341 | FP 少但召回不足 |
+| trailer | 674 | 3485 | 492 | 召回弱，类别样本少且形态变化大 |
+| construction_vehicle | 199 | 2479 | 235 | AP 本身低，召回非常弱 |
+| motorcycle | 990 | 1518 | 952 | 小目标和姿态变化影响较大 |
+| bicycle | 875 | 1506 | 685 | 小目标，漏检和定位偏差都存在 |
+
+结论：
+- 当前模型的 bad case 主要不是单一问题，而是“远距离 + 小目标 + 低可见度”的叠加。
+- FN 中 `fn_far` 和 `fn_low_visibility` 数量都很高，说明相机 BEV 检测对远处、遮挡、截断目标仍然敏感。
+- FP 中 `fp_small` 占比极高，主要集中在 pedestrian、traffic_cone、barrier 等小/细长类别，说明低阈值下会产生大量小目标候选。
+- construction_vehicle、trailer、truck 这类长尾/大车类召回弱，和前面 per-class AP 较低的现象一致。
+
+## 6.2 单样本阈值敏感性
+
+样本：
+`163b70e627854893b88575caf85a56ea`
+
+这个样本一共有 41 个 GT，主要类别是 car、pedestrian、traffic_cone。改变 `score_thr` 后，简化匹配结果变化很明显：
+
+| score_thr | pred | TP | FN | FP | 观察 |
+|---:|---:|---:|---:|---:|---|
+| 0.7 | 4 | 4 | 37 | 0 | 阈值太高，低置信预测被过滤，画面上大量 GT 变 FN |
+| 0.5 | 11 | 8 | 33 | 3 | 召回略升，但仍漏很多小目标/远目标 |
+| 0.3 | 24 | 12 | 29 | 12 | 当前可视化默认阈值，召回和误检折中 |
+| 0.1 | 164 | 28 | 13 | 136 | 低阈值能找回部分漏检，但 FP 爆炸 |
+
+单样本结论：
+- “图上好像有框但仍然是 FN”通常不是代码画错，而是预测框可能被 `score_thr` 过滤、类别不一致，或者 BEV 中心距离超过 `match_dist=2.0m`。
+- 降低阈值可以减少 FN，但会显著增加 FP；这个样本从 `score_thr=0.3` 降到 0.1，FN 从 29 降到 13，但 FP 从 12 增到 136。
+- 所以 bad case 分析不能只看一张投影图，需要同时看预测分数、类别、BEV 中心距离和 GT 可见度。
+
+## 6.3 可视化观察
+
+已经导出的内部可视化样本：
+`outputs/vis_internal/163b70e627854893b88575caf85a56ea/`
+
+包含：
+- `input_cam0~5.jpg`：模型实际输入图，已经反归一化，尺寸是 704x256，不是 nuScenes 原图 1600x900。
+- `depth_argmax_cam0~5.jpg`：每个相机低分辨率 depth bin 最大响应。
+- `depth_conf_cam0~5.jpg`：depth 最大概率，用于观察深度预测是否自信。
+- `splat_sweep0_mean/max.jpg`：key frame splat 到 BEV 后的特征响应。
+- `splat_sweep1_mean/max.jpg`：第二个 sweep splat 到 BEV 后的特征响应。
+- `bev_feature_mean.jpg`：拼接多 sweep 后的最终 BEV feature 响应。
+- `head_heatmap_task*.jpg`：检测头不同 task 的 heatmap。
+
+观察结论：
+- 输入图被 resize/crop/normalize 后，视觉上和原图不同是正常的；当前保存的是反归一化后的模型输入，不是原始相机图片。
+- depth 图是 44x16 的低分辨率特征图，可用于看粗粒度深度趋势，但不能直接当成精确深度图。
+- splat 后 BEV 图可以看哪些区域有图像特征被投到 BEV 网格；如果 GT 所在 BEV 区域响应很弱，可能对应深度估计不准、远距离目标特征弱或遮挡严重。
+- head heatmap 可以辅助区分两类问题：BEV feature 已有响应但 head 没激活，偏检测头/分类问题；BEV feature 本身弱，偏图像特征、深度或几何投影问题。
+
+## 6.4 后续改进方向
+
+- 在 bad case JSON 里增加 `nearest_pred_score`、`nearest_pred_dist`、`nearest_pred_class`，把“纯漏检”和“近距离但没匹配上”的 near-miss 分开。
+- 对 FN 再细分为：远距离漏检、小目标漏检、低可见度漏检、类别错分、定位偏差超过 2m。
+- 对 FP 再细分为：低分重复框、小目标误检、类别混淆、远距离背景误检。
+- 针对小目标 FP 多的问题，可以尝试调 `score_thr`、NMS/post-processing 阈值，或者按类别设置不同阈值。
+- 针对远距离 FN 多的问题，可以结合 depth bin、输入分辨率、远距离数据增强、BEV 网格范围/分辨率继续实验。

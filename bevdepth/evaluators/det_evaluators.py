@@ -289,7 +289,7 @@ class DetNuscEvaluator():
             else:
                 nusc_annos[sample_token] = annos
         nusc_submissions = {
-            'meta': self.modalvcity,
+            'meta': self.modality,
             'results': nusc_annos,
         }
         mmcv.mkdir_or_exist(jsonfile_prefix)
