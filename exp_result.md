@@ -634,3 +634,259 @@ Per-class AP 相对基准变化：
 - 对 FP 再细分为：低分重复框、小目标误检、类别混淆、远距离背景误检。
 - 针对小目标 FP 多的问题，可以尝试调 `score_thr`、NMS/post-processing 阈值，或者按类别设置不同阈值。
 - 针对远距离 FN 多的问题，可以结合 depth bin、输入分辨率、远距离数据增强、BEV 网格范围/分辨率继续实验。
+
+# 7 depth预测与点云深度对比
+
+目的：
+- 检查模型预测的 depth 分布和 LiDAR 投影得到的真实深度监督是否一致。
+- 分析 depth 错误主要出现在近距离、远距离、某些相机，还是概率分布本身不稳定。
+
+分析方法：
+- 新增脚本：`visualize/analyze_depth_vs_lidar.py`
+- 输入：训练好的 checkpoint、exp 配置、nuScenes val 数据。
+- 真实深度：使用数据集里由 LiDAR 点云投影到相机图像得到的 `depth_labels`。
+- 对齐方式：复用训练代码里的 `get_downsampled_gt_depth()`，把点云深度下采样到模型 depth 输出的 16x44 特征图上。
+- 只在有 LiDAR 深度监督的前景像素上统计误差；没有点云落点的像素不参与统计。
+
+注意：
+- 这里比较的是“LiDAR 稀疏点投影深度”，不是全像素稠密深度。
+- depth 输出是离散 depth bin 分类，不是直接回归米制深度。
+- 基准模型 depth bin 为 `d_bound=[2.0, 58.0, 0.5]`，共 112 个 bin。
+- 预测深度用 `argmax depth bin` 转成米制深度；同时也统计了 `expected depth`，即按概率分布求期望。
+
+## 7.1 单样本观察
+
+样本：
+`163b70e627854893b88575caf85a56ea`
+
+输出目录：
+`outputs/depth_analysis_sample/163b70e627854893b88575caf85a56ea/`
+
+包含：
+- `*_input.jpg`：模型输入图，已反归一化。
+- `*_gt_depth.jpg`：LiDAR 投影并下采样后的 GT depth。
+- `*_pred_argmax_depth.jpg`：模型 argmax depth bin 对应的预测深度。
+- `*_pred_expected_depth.jpg`：模型 depth 概率期望。
+- `*_depth_conf.jpg`：最大 depth 概率。
+- `*_argmax_error.jpg`：argmax depth 与 GT depth 的绝对误差。
+- `*_expected_error.jpg`：expected depth 与 GT depth 的绝对误差。
+
+单样本整体结果：
+
+| metric | value |
+|---|---:|
+| valid LiDAR depth points | 3908 |
+| argmax depth MAE | 1.8796m |
+| expected depth MAE | 1.9608m |
+| median error | 0.5m |
+| p75 error | 1.0m |
+| p90 error | 5.0m |
+| within 1m | 75.7% |
+| within 2m | 82.5% |
+| within 4m | 88.7% |
+| mean depth confidence | 0.382 |
+
+按相机：
+
+| camera | valid points | argmax MAE | expected MAE | within 1m | within 2m | within 4m |
+|---|---:|---:|---:|---:|---:|---:|
+| CAM_FRONT_LEFT | 664 | 1.00 | 1.15 | 82.7% | 88.3% | 95.0% |
+| CAM_FRONT | 601 | 3.31 | 3.74 | 70.7% | 77.9% | 83.9% |
+| CAM_FRONT_RIGHT | 666 | 1.99 | 1.87 | 81.1% | 85.1% | 88.0% |
+| CAM_BACK_LEFT | 700 | 1.23 | 1.26 | 78.6% | 84.0% | 92.3% |
+| CAM_BACK | 578 | 2.48 | 2.34 | 68.3% | 78.2% | 84.6% |
+| CAM_BACK_RIGHT | 699 | 1.54 | 1.68 | 71.4% | 80.4% | 87.4% |
+
+单样本结论：
+- 大部分有 LiDAR 监督的点误差不大，median 是 0.5m，说明模型在近处/清晰区域能学到有效深度。
+- 误差有长尾，p90 到 5m；CAM_FRONT 和 CAM_BACK 明显比左右相机更差。
+- `argmax depth` 在这个样本上略优于 `expected depth`，说明概率分布虽然有信息，但用期望会被长尾概率拉偏。
+
+## 7.2 100个val样本统计
+
+命令：
+```
+CUDA_VISIBLE_DEVICES=0 conda run -n bevdepth1 python visualize/analyze_depth_vs_lidar.py \
+  --ckpt outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_6/checkpoints/epoch=23-step=10560.ckpt \
+  --max-samples 100 \
+  --device cuda:0 \
+  --out-dir outputs/depth_analysis_100
+```
+
+结果文件：
+`outputs/depth_analysis_100/depth_vs_lidar_summary.json`
+
+整体：
+
+| metric | value |
+|---|---:|
+| mean sample argmax MAE | 2.216m |
+| mean sample expected MAE | 2.168m |
+
+按相机统计：
+
+| camera | valid points | argmax MAE | signed error | mean conf | within 1m | within 2m | within 4m |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CAM_FRONT_LEFT | 66226 | 2.12 | -0.60 | 0.313 | 66.9% | 77.2% | 86.3% |
+| CAM_FRONT | 61710 | 2.64 | -0.41 | 0.357 | 66.3% | 74.4% | 83.2% |
+| CAM_FRONT_RIGHT | 63732 | 2.59 | -1.24 | 0.323 | 64.8% | 74.3% | 84.2% |
+| CAM_BACK_LEFT | 69030 | 1.71 | -0.53 | 0.329 | 70.5% | 81.1% | 89.6% |
+| CAM_BACK | 57231 | 2.52 | -0.81 | 0.361 | 66.8% | 75.5% | 83.8% |
+| CAM_BACK_RIGHT | 66402 | 1.79 | -0.72 | 0.337 | 71.2% | 81.9% | 89.8% |
+
+说明：
+- signed error = `pred_depth - gt_depth`。
+- signed error 多数为负，说明模型整体倾向于把深度预测得更近。
+- CAM_FRONT、CAM_FRONT_RIGHT、CAM_BACK 的误差更大；CAM_BACK_LEFT、CAM_BACK_RIGHT 相对更好。
+
+按真实深度距离段：
+
+| GT depth range | valid points | argmax MAE | signed error | within 1m | within 2m | within 4m |
+|---|---:|---:|---:|---:|---:|---:|
+| 2-10m | 222842 | 0.56 | +0.11 | 90.0% | 96.0% | 98.8% |
+| 10-20m | 97569 | 2.19 | -0.11 | 52.7% | 70.6% | 86.9% |
+| 20-40m | 47197 | 6.32 | -2.12 | 15.4% | 27.4% | 47.5% |
+| 40-58m | 16723 | 12.67 | -11.25 | 7.6% | 13.6% | 25.0% |
+
+距离段结论：
+- 2-10m 很准，MAE 只有 0.56m，90% 点在 1m 内。
+- 10-20m 开始明显变差，MAE 到 2.19m。
+- 20m 以后是主要问题：20-40m 的 MAE 6.32m，40-58m 的 MAE 12.67m。
+- 远距离 signed error 强烈为负，尤其 40-58m 为 -11.25m，说明远距离点常被预测到更近的 depth bin。
+- 这和 bad case 里远距离 FN 多是一致的：远距离深度被拉近，会导致 lift 到 BEV 后的位置偏前，影响检测头召回和定位。
+
+## 7.3 细depth bin对比
+
+对比模型：
+- 基准：`d_bound=[2.0, 58.0, 0.5]`，depth bins = 112
+- 细 bin：`d_bound=[2.0, 58.0, 0.25]`，depth bins = 224
+
+细 bin 命令：
+```
+CUDA_VISIBLE_DEVICES=0 conda run -n bevdepth1 python visualize/analyze_depth_vs_lidar.py \
+  --exp bevdepth.exps.nuscenes.mv.bev_depth_lss_r50_256x704_128x128_24e_2key_dbins025 \
+  --ckpt outputs/bev_depth_lss_r50_256x704_128x128_24e_2key_dbins025/lightning_logs/version_0/checkpoints/epoch=23-step=10560.ckpt \
+  --max-samples 100 \
+  --device cuda:0 \
+  --out-dir outputs/depth_analysis_100_dbins025
+```
+
+整体对比：
+
+| exp | depth bins | mean argmax MAE | mean expected MAE |
+|---|---:|---:|---:|
+| baseline | 112 | 2.216m | 2.168m |
+| dbins025 | 224 | 2.175m | 2.122m |
+
+按距离段对比：
+
+| GT depth range | baseline MAE | dbins025 MAE | 变化 |
+|---|---:|---:|---:|
+| 2-10m | 0.562 | 0.570 | +0.008 |
+| 10-20m | 2.195 | 2.139 | -0.056 |
+| 20-40m | 6.324 | 6.038 | -0.286 |
+| 40-58m | 12.666 | 12.730 | +0.064 |
+
+结论：
+- 细 depth bin 对整体深度误差有小幅改善，mean argmax MAE 从 2.216m 降到 2.175m。
+- 改善主要来自 10-40m，尤其 20-40m 从 6.32m 降到 6.04m。
+- 2-10m 基本不变，40m 以上也没有改善。
+- 这和 #5 的检测结果一致：细 bin 带来小幅 NDS 提升，但不是根治远距离深度错误。
+
+## 7.4 问题定位
+
+主要问题：
+- 远距离深度低估：20m 以后误差快速变大，40m 以上平均偏近 11m 左右。
+- 中心前/后视角误差偏大：CAM_FRONT、CAM_FRONT_RIGHT、CAM_BACK 比部分侧后视角更差。
+- depth 监督稀疏：统计只来自 LiDAR 投影点，很多图像区域没有直接深度监督；远距离点更稀疏，监督更弱。
+- 下采样带来的遮挡/混合问题：训练时一个 16x 下采样 cell 里取最近深度点，远处目标和近处遮挡物容易混在同一个 cell，模型会偏向近处深度。
+- argmax/expected 差异不大：说明问题不是单纯后处理取 argmax 造成，而是 depth 分布本身在远距离区域就不够准。
+
+后续可做：
+- 对远距离区域单独可视化 GT depth / pred depth / error，确认是否集中在路边小目标、遮挡行人、远处车辆。
+- 加 near/far 分段 depth loss 或者远距离点加权，缓解远处监督被近处点主导。
+- 试非均匀 depth bins：近处细、远处也保留足够分辨率，而不是全范围均匀细化。
+- 结合 bad case：把远距离 FN 的 sample token 和 depth error 图对应起来，看漏检是否发生在 depth 被明显预测近的位置。
+
+## 7.5 远距离FN和depth error对应
+
+目的：
+- 把远距离 FN 的 `sample_token / gt_token` 和局部 depth error 对起来。
+- 看漏检是否经常发生在“GT 所在图像区域被预测得明显更近”的位置。
+
+新增脚本：
+- `visualize/correlate_far_fn_depth.py`
+
+分析方法：
+1. 读取 baseline `results_nusc.json`。
+2. 用 `score_thr=0.3`、`match_dist=2.0m` 做简化匹配，筛选远距离 FN。
+3. 只看 `40m <= ego_distance <= 58m` 的 FN，因为 baseline depth head 的 `d_bound=[2.0, 58.0, 0.5]`，超过 58m 已经不在 depth 可预测范围内。
+4. 把 FN GT box 投影到相机图像，并转换到模型输入图 704x256 和 depth 特征图 44x16 上。
+5. 在 GT box 覆盖的 depth 特征区域里统计 `pred_depth - lidar_depth`。
+6. 如果局部 signed error 小于 -2m，认为这个 FN 区域存在“明显预测近”的现象。
+
+命令：
+```
+CUDA_VISIBLE_DEVICES=0 conda run -n bevdepth1 python visualize/correlate_far_fn_depth.py \
+  --ckpt outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/lightning_logs/version_6/checkpoints/epoch=23-step=10560.ckpt \
+  --pred outputs/bev_depth_lss_r50_256x704_128x128_24e_2key/results_nusc.json \
+  --score-thr 0.3 \
+  --match-dist 2.0 \
+  --far-dist 40 \
+  --max-dist 58 \
+  --max-cases 50 \
+  --device cuda:0 \
+  --out outputs/far_fn_depth_correlation_40_58.json
+```
+
+结果文件：
+- `outputs/far_fn_depth_correlation_40_58.json`
+- 对比图：`outputs/far_fn_depth_examples/contact_sheet.jpg`
+
+整体统计：
+
+| item | value |
+|---|---:|
+| analyzed far FN cases | 50 |
+| cases with LiDAR depth in projected region | 48 |
+| predicted-nearer cases signed error < -2m | 16 |
+| predicted-nearer ratio | 33.3% |
+| mean local signed error | +0.47m |
+| mean local MAE | 6.83m |
+
+解释：
+- 不是所有远距离 FN 都是“深度预测近”导致的。
+- 在 40-58m 远距离 FN 中，大约 1/3 的 GT box 局部区域确实被预测得明显更近。
+- 但也有不少反例是预测偏远，或者局部 LiDAR 点很少，说明远距离 FN 还混有分类置信度低、目标过小、遮挡、可见度低、检测头未激活等原因。
+- `mean local signed error` 为正，说明这 50 个最远 FN 的局部误差方向是混合的；不能简单归因成“远距离全部预测近”。
+
+典型“预测近”的例子：
+
+| sample_token | gt_token | class | dist | camera | local signed error | local MAE | 说明 |
+|---|---|---|---:|---|---:|---:|---|
+| `83d3ee0e085b4ac282e06741fe1f3ae2` | `ba8245e9c3004389aa69c2162234acf4` | car | 58.0m | CAM_BACK_LEFT | -14.90m | 14.90m | GT 区域深度被明显预测近 |
+| `9699d6a8d9384f8885e8c5318bc621ab` | `34335b7b4af349308193c8cd6c452ae6` | barrier | 58.0m | CAM_FRONT | -17.10m | 17.90m | GT 区域误差大且方向偏近 |
+| `8f1dfb1a348a42f4b9c9934da7492a6e` | `54745d4c671a477ea037ac0f20cbe92c` | truck | 58.0m | CAM_BACK | -10.07m | 10.36m | 远距离大车被投到更近 depth |
+
+典型反例：
+
+| sample_token | gt_token | class | dist | local signed error | local MAE | 说明 |
+|---|---|---|---:|---:|---:|---|
+| `d63d4b75524f4c77aa9c7f070b006911` | `2f292a345bfa4bf9a1933a330e710ab2` | barrier | 58.0m | +17.50m | 17.50m | 不是预测近，而是预测远 |
+| `8cd9b9f28b6b44e3933216e65bbfbbd4` | `b20cf436391f49269d347552ffc4c971` | truck | 58.0m | +13.75m | 13.75m | 远距离 FN 但 depth 方向不是偏近 |
+
+对比图说明：
+- `outputs/far_fn_depth_examples/contact_sheet.jpg` 中每个样本包含 input、GT depth、pred depth、argmax error。
+- 黄色框是远距离 FN GT box 投影区域。
+- 前 3 个样本是局部 signed error 明显为负，也就是预测深度比 LiDAR 深度更近。
+- 后 2 个样本是反例，说明 FN 不一定由预测近造成。
+
+结论：
+- “远距离 depth 被预测近”确实是远距离 FN 的一个重要原因，但不是唯一原因。
+- 在 40-58m 可预测范围内，约 1/3 远距离 FN 有明显预测近现象。
+- 更严谨的 bad case 分类可以把远距离 FN 分成：
+  - `far_fn_depth_too_near`
+  - `far_fn_depth_too_far`
+  - `far_fn_no_lidar_depth_in_box`
+  - `far_fn_low_score_or_no_heatmap`
+- 下一步如果要继续深入，应该把 head heatmap 一起叠到这些 FN box 区域上，看“depth 已经错了”还是“depth 有响应但检测头没激活”。
